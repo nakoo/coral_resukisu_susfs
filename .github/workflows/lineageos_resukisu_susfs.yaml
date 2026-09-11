@@ -124,20 +124,21 @@ jobs:
           fi
           echo "✅ SuSFS kernel patch applied cleanly with 0 rejects."
 
-          # 5. Fix AOSP vold peer ID mount gap dynamically in susfs_show_mountinfo
+          # 5. Fix AOSP vold peer ID mount gap in show_mountinfo
           python3 -c '
           with open("fs/proc_namespace.c", "r") as f:
               content = f.read()
 
-          target = "if (r->mnt_id >= DEFAULT_KSU_MNT_ID)\n\t\treturn 0;"
+          target = "static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)\n{"
           replacement = target + """
-          \tif (r->mnt_mountpoint && !strcmp(r->mnt_mountpoint->d_name.name, "obb")) {
-          \t\tstruct mount *p_mnt = r->mnt_parent;
-          \t\tif (p_mnt && p_mnt->mnt_mountpoint && !strcmp(p_mnt->mnt_mountpoint->d_name.name, "Android")) {
-          \t\t\twhile (p_mnt && p_mnt != p_mnt->mnt_parent) {
-          \t\t\t\tif (p_mnt->mnt_mountpoint && !strcmp(p_mnt->mnt_mountpoint->d_name.name, "androidwritable"))
+          \tstruct mount *r = real_mount(mnt);
+          \tif (!susfs_is_current_ksu_domain()) {
+          \t\tif (r->mnt_mountpoint && !strcmp(r->mnt_mountpoint->d_name.name, "obb")) {
+          \t\t\tstruct mount *m_p = r->mnt_parent;
+          \t\t\twhile (m_p && m_p != m_p->mnt_parent) {
+          \t\t\t\tif (m_p->mnt_mountpoint && !strcmp(m_p->mnt_mountpoint->d_name.name, "androidwritable"))
           \t\t\t\t\treturn 0;
-          \t\t\t\tp_mnt = p_mnt->mnt_parent;
+          \t\t\t\tm_p = m_p->mnt_parent;
           \t\t\t}
           \t\t}
           \t}"""
@@ -146,9 +147,9 @@ jobs:
               content = content.replace(target, replacement, 1)
               with open("fs/proc_namespace.c", "w") as f:
                   f.write(content)
-              print("✅ Successfully patched fs/proc_namespace.c dynamically.")
+              print("✅ Successfully patched show_mountinfo in fs/proc_namespace.c")
           else:
-              print("❌ Error: Target string not found in fs/proc_namespace.c")
+              print("❌ Error: Target show_mountinfo not found in fs/proc_namespace.c")
               exit(1)
           '
           git diff fs/proc_namespace.c
