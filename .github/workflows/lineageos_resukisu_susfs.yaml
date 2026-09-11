@@ -124,7 +124,7 @@ jobs:
           fi
           echo "✅ SuSFS kernel patch applied cleanly with 0 rejects."
 
-          # 5. Fix AOSP vold peer ID mount gap in show_mountinfo and susfs_show_mountinfo
+          # 5. Fix AOSP vold peer ID mount gap in all mounts and mountinfo functions
           python3 - << 'PY_EOF'
           with open("fs/proc_namespace.c", "r") as f:
               content = f.read()
@@ -134,7 +134,8 @@ jobs:
           static inline bool susfs_is_redundant_vold_obb(struct mount *r) {
           \tif (unlikely(r->mnt_mountpoint && !strcmp(r->mnt_mountpoint->d_name.name, "obb"))) {
           \t\tstruct mount *m_p = r->mnt_parent;
-          \t\twhile (m_p && m_p != m_p->mnt_parent) {
+          \t\tint depth = 0;
+          \t\twhile (m_p && m_p != m_p->mnt_parent && depth++ < 32) {
           \t\t\tif (m_p->mnt_mountpoint && !strcmp(m_p->mnt_mountpoint->d_name.name, "androidwritable"))
           \t\t\t\treturn true;
           \t\t\tm_p = m_p->mnt_parent;
@@ -145,14 +146,23 @@ jobs:
           #endif
           """
 
-          # 1. Insert helper function above show_mountinfo
-          target_show_def = "static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)"
-          if target_show_def not in content:
-              print("❌ Error: show_mountinfo definition not found")
+          # 1. Insert helper function above show_vfsmnt
+          target_vfsmnt_def = "static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)"
+          if target_vfsmnt_def not in content:
+              print("❌ Error: show_vfsmnt definition not found")
               exit(1)
-          content = content.replace(target_show_def, helper + "\n" + target_show_def, 1)
+          content = content.replace(target_vfsmnt_def, helper + "\n" + target_vfsmnt_def, 1)
 
-          # 2. Inject check into show_mountinfo (cold boot / hide_sus_mnts=0)
+          # 2. Inject check into show_vfsmnt (cold boot / hide_sus_mnts=0)
+          target_vfsmnt_code = "if (sb->s_op->show_devname) {"
+          replacement_vfsmnt_code = """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          \tif (unlikely(!susfs_is_current_ksu_domain() && susfs_is_redundant_vold_obb(r)))
+          \t\treturn 0;
+          #endif
+          \t""" + target_vfsmnt_code
+          content = content.replace(target_vfsmnt_code, replacement_vfsmnt_code, 1)
+
+          # 3. Inject check into show_mountinfo (cold boot / hide_sus_mnts=0)
           target_show_code = 'seq_printf(m, "%i %i %u:%u ", r->mnt_id, r->mnt_parent->mnt_id,'
           replacement_show_code = """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
           \tif (unlikely(!susfs_is_current_ksu_domain() && susfs_is_redundant_vold_obb(r)))
@@ -161,25 +171,35 @@ jobs:
           \t""" + target_show_code
           content = content.replace(target_show_code, replacement_show_code, 1)
 
-          # 3. Inject check into susfs_show_mountinfo (when Brene / hide_sus_mnts=1)
-          split_marker = "static int susfs_show_mountinfo(struct seq_file *m, struct vfsmount *mnt)"
-          parts = content.split(split_marker)
-          if len(parts) != 2:
-              print("❌ Error: susfs_show_mountinfo definition not found")
+          # 4. Inject check into susfs_show_vfsmnt (when Brene / hide_sus_mnts=1)
+          parts_vfsmnt = content.split("static int susfs_show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)")
+          if len(parts_vfsmnt) != 2:
+              print("❌ Error: susfs_show_vfsmnt definition not found")
               exit(1)
 
           target_susfs = "if (r->mnt_id >= DEFAULT_KSU_MNT_ID)\n\t\treturn 0;"
           replacement_susfs = target_susfs + "\n\tif (unlikely(susfs_is_redundant_vold_obb(r)))\n\t\treturn 0;"
-          if target_susfs not in parts[1]:
+
+          if target_susfs not in parts_vfsmnt[1]:
+              print("❌ Error: target not found inside susfs_show_vfsmnt")
+              exit(1)
+          parts_vfsmnt[1] = parts_vfsmnt[1].replace(target_susfs, replacement_susfs, 1)
+          content = "static int susfs_show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)".join(parts_vfsmnt)
+
+          # 5. Inject check into susfs_show_mountinfo (when Brene / hide_sus_mnts=1)
+          parts_mntinfo = content.split("static int susfs_show_mountinfo(struct seq_file *m, struct vfsmount *mnt)")
+          if len(parts_mntinfo) != 2:
+              print("❌ Error: susfs_show_mountinfo definition not found")
+              exit(1)
+          if target_susfs not in parts_mntinfo[1]:
               print("❌ Error: target not found inside susfs_show_mountinfo")
               exit(1)
-
-          parts[1] = parts[1].replace(target_susfs, replacement_susfs, 1)
-          content = split_marker.join(parts)
+          parts_mntinfo[1] = parts_mntinfo[1].replace(target_susfs, replacement_susfs, 1)
+          content = "static int susfs_show_mountinfo(struct seq_file *m, struct vfsmount *mnt)".join(parts_mntinfo)
 
           with open("fs/proc_namespace.c", "w") as f:
               f.write(content)
-          print("✅ Successfully patched both mountinfo functions in fs/proc_namespace.c")
+          print("✅ Successfully patched all 4 mount/mountinfo functions in fs/proc_namespace.c")
           PY_EOF
           git diff fs/proc_namespace.c
 
