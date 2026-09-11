@@ -287,17 +287,16 @@ jobs:
           with open("drivers/android/binder.c", "r") as f:
               content = f.read()
 
-          target = """\tif (binder_alloc_copy_user_to_buffer(
-          \t\t\t\t&target_proc->alloc,
-          \t\t\t\tt->buffer, 0,
-          \t\t\t\t(const void __user *)
-          \t\t\t\t\t(uintptr_t)tr->data.ptr.buffer,
-          \t\t\t\ttr->data_size)) {
+          marker = """\t\tbinder_user_error("%d:%d got transaction with invalid data ptr\\n",
+          \t\t\t\tproc->pid, thread->pid);
           \t\treturn_error = BR_FAILED_REPLY;
           \t\treturn_error_param = -EFAULT;
           \t\treturn_error_line = __LINE__;
           \t\tgoto err_copy_data_failed;
           \t}"""
+
+          # Normalize indentation matching the source file
+          marker = marker.replace("          \t", "\t")
 
           injection = """\n
           \t/* Fast-path: Sanitize LineageOS service queries strictly for untrusted apps (UID >= 10000) interacting with servicemanager */
@@ -332,14 +331,13 @@ jobs:
 
           \t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, win, t->buffer, off, chunk_len);
           \t\t\t\tfor (i = 0; i + 14 <= chunk_len; i++) {
-          \t\t\t\t\t/* Fast 2-byte scalar check before calling memcmp */
-          \t\t\t\t\tif (win[i] == 'l' && win[i + 1] == '\\0') {
+          \t\t\t\t\tif (win[i] == 'l' && win[i + 1] == 0) {
           \t\t\t\t\t\tif (!memcmp(&win[i], n_lineage, 14)) {
           \t\t\t\t\t\t\tmemcpy(&win[i], repl_dummy, 14);
           \t\t\t\t\t\t\tmodified = true;
           \t\t\t\t\t\t\ti += 13;
           \t\t\t\t\t\t}
-          \t\t\t\t\t} else if (!reply && win[i] == 'p' && win[i + 1] == '\\0') {
+          \t\t\t\t\t} else if (!reply && win[i] == 'p' && win[i + 1] == 0) {
           \t\t\t\t\t\tif (!memcmp(&win[i], n_profile, 14)) {
           \t\t\t\t\t\t\tmemcpy(&win[i], repl_dummy, 14);
           \t\t\t\t\t\t\tmodified = true;
@@ -357,11 +355,11 @@ jobs:
           \t\t}
           \t}"""
 
-          if target not in content:
-              print("❌ Error: Target binder_alloc_copy_user_to_buffer block not found in drivers/android/binder.c")
+          if marker not in content:
+              print("❌ Error: Target marker block not found in drivers/android/binder.c")
               exit(1)
 
-          content = content.replace(target, target + injection, 1)
+          content = content.replace(marker, marker + injection, 1)
 
           with open("drivers/android/binder.c", "w") as f:
               f.write(content)
