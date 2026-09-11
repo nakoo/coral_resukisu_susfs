@@ -7,7 +7,7 @@ on:
         description: "Direct download URL for LineageOS 23.2 base boot.img"
         required: true
         type: string
-        default: "https://mirrorbits.lineageos.org/full/coral/20260904/boot.img"
+        default: "https://mirrorbits.lineageos.org/full/coral/20260911/boot.img"
 
 jobs:
   build-resukisu-coral-4-14:
@@ -331,7 +331,7 @@ jobs:
           echo "Successfully created ReSukiSU + SuSFS boot.img"
 
       - name: Upload ReSukiSU + SuSFS boot.img Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coral-resukisu-susfs
           path: out_artifacts/*
