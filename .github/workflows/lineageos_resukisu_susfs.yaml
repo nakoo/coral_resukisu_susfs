@@ -124,6 +124,35 @@ jobs:
           fi
           echo "✅ SuSFS kernel patch applied cleanly with 0 rejects."
 
+          # 5. Fix AOSP vold peer ID mount gap dynamically in susfs_show_mountinfo
+          python3 -c '
+          with open("fs/proc_namespace.c", "r") as f:
+              content = f.read()
+
+          target = "if (r->mnt_id >= DEFAULT_KSU_MNT_ID)\n\t\treturn 0;"
+          replacement = target + """
+          \tif (r->mnt_mountpoint && !strcmp(r->mnt_mountpoint->d_name.name, "obb")) {
+          \t\tstruct mount *p_mnt = r->mnt_parent;
+          \t\tif (p_mnt && p_mnt->mnt_mountpoint && !strcmp(p_mnt->mnt_mountpoint->d_name.name, "Android")) {
+          \t\t\twhile (p_mnt && p_mnt != p_mnt->mnt_parent) {
+          \t\t\t\tif (p_mnt->mnt_mountpoint && !strcmp(p_mnt->mnt_mountpoint->d_name.name, "androidwritable"))
+          \t\t\t\t\treturn 0;
+          \t\t\t\tp_mnt = p_mnt->mnt_parent;
+          \t\t\t}
+          \t\t}
+          \t}"""
+
+          if target in content:
+              content = content.replace(target, replacement, 1)
+              with open("fs/proc_namespace.c", "w") as f:
+                  f.write(content)
+              print("✅ Successfully patched fs/proc_namespace.c dynamically.")
+          else:
+              print("❌ Error: Target string not found in fs/proc_namespace.c")
+              exit(1)
+          '
+          git diff fs/proc_namespace.c
+
       - name: Setup ReSukiSU Driver
         run: |
           cd kernel_src
