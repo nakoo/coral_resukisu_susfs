@@ -282,7 +282,7 @@ jobs:
       - name: Patch Binder to Sanitize LineageOS Services for Untrusted Apps
         run: |
           cd kernel_src
-          echo "=== Patching drivers/android/binder.c with high-performance service masking ==="
+          echo "=== Patching drivers/android/binder.c with hardened service masking ==="
           python3 - << 'PY_EOF'
           with open("drivers/android/binder.c", "r") as f:
               content = f.read()
@@ -339,9 +339,12 @@ jobs:
           \t\t\t\t\t\t}
           \t\t\t\t\t} else if (!reply && win[i] == 'p' && win[i + 1] == 0) {
           \t\t\t\t\t\tif (!memcmp(&win[i], n_profile, 14)) {
-          \t\t\t\t\t\t\tmemcpy(&win[i], repl_dummy, 14);
-          \t\t\t\t\t\t\tmodified = true;
-          \t\t\t\t\t\t\ti += 13;
+          \t\t\t\t\t\t\t/* Only match standalone "profile" (null-terminated), ignoring "crossprofileapps" */
+          \t\t\t\t\t\t\tif (i + 15 >= chunk_len || (win[i + 14] == 0 && win[i + 15] == 0)) {
+          \t\t\t\t\t\t\t\tmemcpy(&win[i], repl_dummy, 14);
+          \t\t\t\t\t\t\t\tmodified = true;
+          \t\t\t\t\t\t\t\ti += 13;
+          \t\t\t\t\t\t\t}
           \t\t\t\t\t\t}
           \t\t\t\t\t}
           \t\t\t\t}
@@ -364,7 +367,7 @@ jobs:
           with open("drivers/android/binder.c", "w") as f:
               f.write(content)
 
-          print("✅ Successfully patched drivers/android/binder.c with optimized filter")
+          print("✅ Successfully patched drivers/android/binder.c with hardened filter")
           PY_EOF
           git diff drivers/android/binder.c
 
