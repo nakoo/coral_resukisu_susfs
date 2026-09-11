@@ -33,6 +33,28 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_kernel_google_msm-4.14 -b lineage-23.2 kernel_src
 
+      - name: Apply ptrace_stop Backport Patch
+        run: |
+          cd kernel_src
+          echo "=== Applying ptrace_stop backport patch ==="
+          curl -fSL \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 600 \
+            https://github.com/sidex15/android_kernel_lge_sm8150/commit/fcc59dc3310d3a1511d02dc3ac6d1e113517ece1.patch \
+            | patch -p1
+
+          # Verify no rejected hunks exist
+          REJ_COUNT=$(find . -name "*.rej" | wc -l)
+          if [ "$REJ_COUNT" -ne 0 ]; then
+            echo "::error::Found $REJ_COUNT rejected patch files in ptrace_stop patch!"
+            find . -name "*.rej" -exec cat {} +
+            exit 1
+          fi
+          echo "✅ ptrace_stop backport patch applied cleanly with 0 rejects."
+
       - name: Download Base boot.img
         run: |
           echo "=== Downloading base boot.img ==="
