@@ -183,6 +183,102 @@ jobs:
           PY_EOF
           git diff fs/proc_namespace.c
 
+      - name: Patch show_smap to Sanitize Executable File Mappings
+        run: |
+          cd kernel_src
+          echo "=== Patching show_smap with optimized branch prediction ==="
+          python3 - << 'PY_EOF'
+          with open("fs/proc/task_mmu.c", "r") as f:
+              content = f.read()
+
+          target = """\tif (!rollup_mode || last_vma)
+          \t\tseq_printf(m,
+          \t\t\t   "Rss:            %8lu kB\\n"
+          \t\t\t   "Pss:            %8lu kB\\n"
+          \t\t\t   "Shared_Clean:   %8lu kB\\n"
+          \t\t\t   "Shared_Dirty:   %8lu kB\\n"
+          \t\t\t   "Private_Clean:  %8lu kB\\n"
+          \t\t\t   "Private_Dirty:  %8lu kB\\n"
+          \t\t\t   "Referenced:     %8lu kB\\n"
+          \t\t\t   "Anonymous:      %8lu kB\\n"
+          \t\t\t   "LazyFree:       %8lu kB\\n"
+          \t\t\t   "AnonHugePages:  %8lu kB\\n"
+          \t\t\t   "ShmemPmdMapped: %8lu kB\\n"
+          \t\t\t   "Shared_Hugetlb: %8lu kB\\n"
+          \t\t\t   "Private_Hugetlb: %7lu kB\\n"
+          \t\t\t   "Swap:           %8lu kB\\n"
+          \t\t\t   "SwapPss:        %8lu kB\\n"
+          \t\t\t   "Locked:         %8lu kB\\n",
+          \t\t\t   mss->resident >> 10,
+          \t\t\t   (unsigned long)(mss->pss >> (10 + PSS_SHIFT)),
+          \t\t\t   mss->shared_clean  >> 10,
+          \t\t\t   mss->shared_dirty  >> 10,
+          \t\t\t   mss->private_clean >> 10,
+          \t\t\t   mss->private_dirty >> 10,
+          \t\t\t   mss->referenced >> 10,
+          \t\t\t   mss->anonymous >> 10,"""
+
+          replacement = """\tif (!rollup_mode || last_vma) {
+          \t\tunsigned long smap_priv_clean = mss->private_clean;
+          \t\tunsigned long smap_priv_dirty = mss->private_dirty;
+          \t\tunsigned long smap_anon = mss->anonymous;
+
+          \t\tif (unlikely(!rollup_mode && vma->vm_file && (vma->vm_flags & VM_EXEC))) {
+          \t\t\tif (smap_anon || smap_priv_dirty) {
+          \t\t\t\tsmap_priv_clean += smap_priv_dirty;
+          \t\t\t\tsmap_priv_dirty = 0;
+          \t\t\t\tsmap_anon = 0;
+          \t\t\t}
+          \t\t}
+
+          \t\tseq_printf(m,
+          \t\t\t   "Rss:            %8lu kB\\n"
+          \t\t\t   "Pss:            %8lu kB\\n"
+          \t\t\t   "Shared_Clean:   %8lu kB\\n"
+          \t\t\t   "Shared_Dirty:   %8lu kB\\n"
+          \t\t\t   "Private_Clean:  %8lu kB\\n"
+          \t\t\t   "Private_Dirty:  %8lu kB\\n"
+          \t\t\t   "Referenced:     %8lu kB\\n"
+          \t\t\t   "Anonymous:      %8lu kB\\n"
+          \t\t\t   "LazyFree:       %8lu kB\\n"
+          \t\t\t   "AnonHugePages:  %8lu kB\\n"
+          \t\t\t   "ShmemPmdMapped: %8lu kB\\n"
+          \t\t\t   "Shared_Hugetlb: %8lu kB\\n"
+          \t\t\t   "Private_Hugetlb: %7lu kB\\n"
+          \t\t\t   "Swap:           %8lu kB\\n"
+          \t\t\t   "SwapPss:        %8lu kB\\n"
+          \t\t\t   "Locked:         %8lu kB\\n",
+          \t\t\t   mss->resident >> 10,
+          \t\t\t   (unsigned long)(mss->pss >> (10 + PSS_SHIFT)),
+          \t\t\t   mss->shared_clean  >> 10,
+          \t\t\t   mss->shared_dirty  >> 10,
+          \t\t\t   smap_priv_clean >> 10,
+          \t\t\t   smap_priv_dirty >> 10,
+          \t\t\t   mss->referenced >> 10,
+          \t\t\t   smap_anon >> 10,"""
+
+          if target not in content:
+              print("❌ Error: Target seq_printf block not found in fs/proc/task_mmu.c")
+              exit(1)
+
+          content = content.replace(target, replacement, 1)
+
+          close_target = "(unsigned long)(mss->pss_locked >> (10 + PSS_SHIFT)));"
+          close_replacement = "(unsigned long)(mss->pss_locked >> (10 + PSS_SHIFT)));\n\t}"
+
+          if close_target not in content:
+              print("❌ Error: Close target not found in fs/proc/task_mmu.c")
+              exit(1)
+
+          content = content.replace(close_target, close_replacement, 1)
+
+          with open("fs/proc/task_mmu.c", "w") as f:
+              f.write(content)
+
+          print("✅ Successfully patched show_smap in fs/proc/task_mmu.c")
+          PY_EOF
+          git diff fs/proc/task_mmu.c
+
       - name: Setup ReSukiSU Driver
         run: |
           cd kernel_src
