@@ -425,8 +425,9 @@ jobs:
 
           \t\t\t\t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, &len, t->buffer, offset, sizeof(len));
 
-          \t\t\t\t\t\t\tif (len < 0) {
-          \t\t\t\t\t\t\t\toffset += 4; /* Binder represents null strings as -1 */
+          \t\t\t\t\t\t\tif (len < 0 || len > 256) {
+          \t\t\t\t\t\t\t\tif (len < 0) offset += 4; /* Binder represents null strings as -1 */
+          \t\t\t\t\t\t\t\telse break; /* Malformed or non-string parcel: safely stop */
           \t\t\t\t\t\t\t\tcontinue;
           \t\t\t\t\t\t\t}
 
@@ -449,23 +450,23 @@ jobs:
           \t\t\t\t\t\t\t\t\telse if (len >= 14 && !memcmp(chars, s_vendor_lineage, 28)) match = true;
 
           \t\t\t\t\t\t\t\tif (match) {
-          \t\t\t\t\t\t\t\t\t\tint32_t i;
-          \t\t\t\t\t\t\t\t\t\tfor (i = 0; i < len; i++) {
-          \t\t\t\t\t\t\t\t\t\t\tchars[i] = (i < 7) ? s_dummy[i] : '0';
-          \t\t\t\t\t\t\t\t\t\t}
-          \t\t\t\t\t\t\t\t\t\t/* 4.14 SAFE: Write ONLY the modified string back */
-          \t\t\t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, chars, len * 2);
+          \t\t\t\t\t\t\t\t\tint32_t i;
+          \t\t\t\t\t\t\t\t\tfor (i = 0; i < len; i++) {
+          \t\t\t\t\t\t\t\t\t\tchars[i] = (i < 7) ? s_dummy[i] : '0';
           \t\t\t\t\t\t\t\t\t}
+          \t\t\t\t\t\t\t\t\t/* 4.14 SAFE: Write ONLY the modified string back */
+          \t\t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, chars, len * 2);
           \t\t\t\t\t\t\t\t}
           \t\t\t\t\t\t\t}
-
-          \t\t\t\t\t\t\toffset += 4 + str_bytes;
           \t\t\t\t\t\t}
+
+          \t\t\t\t\t\toffset += 4 + str_bytes;
           \t\t\t\t\t}
           \t\t\t\t}
           \t\t\t}
           \t\t}
-          \t}"""
+          \t}
+          }"""
 
           if marker not in content:
               print("❌ Error: Target marker block not found in drivers/android/binder.c")
