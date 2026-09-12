@@ -325,7 +325,8 @@ jobs:
           \t\t\tif (proc == context->binder_context_mgr_node->proc && target_proc && target_proc->tsk) {
           \t\t\t\trcu_read_lock();
           \t\t\t\tif (from_kuid(&init_user_ns, task_uid(target_proc->tsk)) >= 10000) {
-          \t\t\t\t\tif (!strstr(target_proc->tsk->comm, "lineage"))
+          \t\t\t\t\tconst char *c = target_proc->tsk->comm;
+          \t\t\t\t\tif (!strstr(c, "lineage") && !strstr(c, "android") && !strstr(c, "system") && !strstr(c, "trebuchet"))
           \t\t\t\t\t\tis_target_txn = true;
           \t\t\t\t}
           \t\t\t\trcu_read_unlock();
@@ -335,7 +336,8 @@ jobs:
           \t\t\tif (target_node == context->binder_context_mgr_node && proc && proc->tsk) {
           \t\t\t\trcu_read_lock();
           \t\t\t\tif (from_kuid(&init_user_ns, task_uid(proc->tsk)) >= 10000) {
-          \t\t\t\t\tif (!strstr(proc->tsk->comm, "lineage"))
+          \t\t\t\t\tconst char *c = proc->tsk->comm;
+          \t\t\t\t\tif (!strstr(c, "lineage") && !strstr(c, "android") && !strstr(c, "system") && !strstr(c, "trebuchet"))
           \t\t\t\t\t\tis_target_txn = true;
           \t\t\t\t}
           \t\t\t\trcu_read_unlock();
@@ -349,8 +351,8 @@ jobs:
           \t\t\tstatic const u16 s_vendor_lineage[] = { 'v', 'e', 'n', 'd', 'o', 'r', '.', 'l', 'i', 'n', 'e', 'a', 'g', 'e' };
           \t\t\tstatic const u16 s_dummy[] = { 'd', 'u', 'm', 'm', 'y', '_', '0' };
 
-          \t\tif (!reply) {
-          \t\t\t\t/* Fast-path request: checkService / getService */
+          \t\t\tif (!reply) {
+          \t\t\t\t/* Fast-path request: ONLY sanitize "profile" queries (never touch lineage* hardware services) */
           \t\t\t\tu32 req_buf[64]; /* 256 bytes, guaranteed 4-byte aligned on kernel stack */
           \t\t\t\tsize_t copy_len = min_t(size_t, tr->data_size, sizeof(req_buf));
 
@@ -383,27 +385,14 @@ jobs:
 
           \t\t\t\t\tif (offset + 4 <= copy_len) {
           \t\t\t\t\t\tint32_t name_len = *(int32_t *)(kdata + offset);
-          \t\t\t\t\t\tif (name_len >= 7 && name_len <= 128 && offset + 4 + (name_len * 2) <= copy_len) {
+          \t\t\t\t\t\tif (name_len == 7 && offset + 4 + 14 <= copy_len) {
           \t\t\t\t\t\t\tu16 *name_chars = (u16 *)(kdata + offset + 4);
-          \t\t\t\t\t\t\tu16 first_char = name_chars[0];
-
-          \t\t\t\t\t\t\t/* FAST-PATH REJECT: 99% of services don't start with p, l, or v */
-          \t\t\t\t\t\t\tif (first_char == 'p' || first_char == 'l' || first_char == 'v') {
-          \t\t\t\t\t\t\t\tbool match = false;
-          \t\t\t\t\t\t\t\t/* Compiler optimizes these memcmp calls into highly efficient ARM64 load/compare instructions */
-          \t\t\t\t\t\t\t\tif (name_len == 7 && !memcmp(name_chars, s_profile, 14)) match = true;
-          \t\t\t\t\t\t\t\telse if (name_len >= 7 && !memcmp(name_chars, s_lineage, 14)) match = true;
-          \t\t\t\t\t\t\t\telse if (name_len >= 14 && !memcmp(name_chars, s_vendor_lineage, 28)) match = true;
-
-          \t\t\t\t\t\t\t\tif (match) {
-          \t\t\t\t\t\t\t\t\tint32_t i;
-          \t\t\t\t\t\t\t\t\t/* Overwrite exactly name_len characters to preserve Parcel length prefix and alignment */
-          \t\t\t\t\t\t\t\t\tfor (i = 0; i < name_len; i++) {
-          \t\t\t\t\t\t\t\t\t\tname_chars[i] = (i < 7) ? s_dummy[i] : '0';
-          \t\t\t\t\t\t\t\t\t}
-          \t\t\t\t\t\t\t\t\t/* 4.14 SAFE: Write ONLY the modified string back to target process */
-          \t\t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, name_chars, name_len * 2);
+          \t\t\t\t\t\t\tif (name_chars[0] == 'p' && !memcmp(name_chars, s_profile, 14)) {
+          \t\t\t\t\t\t\t\tint32_t i;
+          \t\t\t\t\t\t\t\tfor (i = 0; i < 7; i++) {
+          \t\t\t\t\t\t\t\t\tname_chars[i] = s_dummy[i];
           \t\t\t\t\t\t\t\t}
+          \t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, name_chars, 14);
           \t\t\t\t\t\t\t}
           \t\t\t\t\t\t}
           \t\t\t\t\t}
@@ -435,7 +424,7 @@ jobs:
           \t\t\t\t\t\t\t\tif (len < 0) offset += 4; /* Binder represents null strings as -1 */
           \t\t\t\t\t\t\t\telse break; /* Malformed or non-string parcel: safely stop */
           \t\t\t\t\t\t\t\tcontinue;
-          \t\t\t\t\t\t\t}
+          \t\t\t\t\t\t}
 
           \t\t\t\t\t\t\t/* Calculate exact string block size including null terminator and 4-byte alignment padding */
           \t\t\t\t\t\t\tstr_bytes = ((len + 1) * 2 + 3) & ~3;
