@@ -302,7 +302,7 @@ jobs:
       - name: Patch Binder to Sanitize LineageOS Services for Untrusted Apps
         run: |
           cd kernel_src
-          echo "=== Patching drivers/android/binder.c with hardened service masking ==="
+          echo "=== Patching drivers/android/binder.c with hardened structured parser ==="
           python3 - << 'PY_EOF'
           with open("drivers/android/binder.c", "r") as f:
               content = f.read()
@@ -315,68 +315,138 @@ jobs:
           \t\tgoto err_copy_data_failed;
           \t}"""
 
-          # Normalize indentation matching the source file
-          marker = marker.replace("          \t", "\t")
-
           injection = """\n
           \t/* Fast-path: Sanitize LineageOS service queries strictly for untrusted apps (UID >= 10000) interacting with servicemanager */
-          \tif (unlikely(tr->data_size >= 14 && context->binder_context_mgr_node)) {
+          \tif (unlikely(tr->data_size >= 14 && context && context->binder_context_mgr_node)) {
           \t\tbool is_target_txn = false;
 
           \t\tif (reply) {
           \t\t\t/* Only inspect replies originating FROM servicemanager to untrusted apps */
           \t\t\tif (proc == context->binder_context_mgr_node->proc && target_proc && target_proc->tsk) {
-          \t\t\t\tif (from_kuid(&init_user_ns, task_uid(target_proc->tsk)) >= 10000)
-          \t\t\t\t\tis_target_txn = true;
+          \t\t\t\trcu_read_lock();
+          \t\t\t\tif (from_kuid(&init_user_ns, task_uid(target_proc->tsk)) >= 10000) {
+          \t\t\t\t\tif (!strstr(target_proc->tsk->comm, "lineage"))
+          \t\t\t\t\t\tis_target_txn = true;
+          \t\t\t\t}
+          \t\t\t\trcu_read_unlock();
           \t\t\t}
           \t\t} else {
           \t\t\t/* Only inspect requests directed TO servicemanager from untrusted apps */
           \t\t\tif (target_node == context->binder_context_mgr_node && proc && proc->tsk) {
-          \t\t\t\tif (from_kuid(&init_user_ns, task_uid(proc->tsk)) >= 10000)
-          \t\t\t\t\tis_target_txn = true;
+          \t\t\t\trcu_read_lock();
+          \t\t\t\tif (from_kuid(&init_user_ns, task_uid(proc->tsk)) >= 10000) {
+          \t\t\t\t\tif (!strstr(proc->tsk->comm, "lineage"))
+          \t\t\t\t\t\tis_target_txn = true;
+          \t\t\t\t}
+          \t\t\t\trcu_read_unlock();
           \t\t\t}
           \t\t}
 
           \t\tif (unlikely(is_target_txn)) {
-          \t\t\tstatic const char n_lineage[14] = { 'l', 0, 'i', 0, 'n', 0, 'e', 0, 'a', 0, 'g', 0, 'e', 0 };
-          \t\t\tstatic const char n_profile[14] = { 'p', 0, 'r', 0, 'o', 0, 'f', 0, 'i', 0, 'l', 0, 'e', 0 };
-          \t\t\tstatic const char repl_dummy[14] = { 'd', 0, 'u', 0, 'm', 0, 'm', 0, 'y', 0, '_', 0, '0', 0 };
-          \t\t\tsize_t off = 0;
-          \t\t\tchar win[512];
+          \t\t\t/* Hoisted constants for .rodata section and cache locality */
+          \t\t\tstatic const u16 s_profile[] = { 'p', 'r', 'o', 'f', 'i', 'l', 'e' };
+          \t\t\tstatic const u16 s_lineage[] = { 'l', 'i', 'n', 'e', 'a', 'g', 'e' };
+          \t\t\tstatic const u16 s_vendor_lineage[] = { 'v', 'e', 'n', 'd', 'o', 'r', '.', 'l', 'i', 'n', 'e', 'a', 'g', 'e' };
+          \t\t\tstatic const u16 s_dummy[] = { 'd', 'u', 'm', 'm', 'y', '_', '0' };
 
-          \t\t\twhile (off + 14 <= tr->data_size) {
-          \t\t\t\tsize_t chunk_len = min_t(size_t, tr->data_size - off, sizeof(win));
-          \t\t\t\tsize_t i;
-          \t\t\t\tbool modified = false;
+          \t\t\tif (!reply) {
+          \t\t\t\t/* Fast-path request: checkService / getService */
+          \t\t\t\tu32 req_buf[64]; /* 256 bytes, guaranteed 4-byte aligned on kernel stack */
+          \t\t\t\tsize_t copy_len = min_t(size_t, tr->data_size, sizeof(req_buf));
 
-          \t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, win, t->buffer, off, chunk_len);
-          \t\t\t\tfor (i = 0; i + 14 <= chunk_len; i++) {
-          \t\t\t\t\tif (win[i] == 'l' && win[i + 1] == 0) {
-          \t\t\t\t\t\tif (!memcmp(&win[i], n_lineage, 14)) {
-          \t\t\t\t\t\t\tmemcpy(&win[i], repl_dummy, 14);
-          \t\t\t\t\t\t\tmodified = true;
-          \t\t\t\t\t\t\ti += 13;
-          \t\t\t\t\t\t}
-          \t\t\t\t\t} else if (!reply && win[i] == 'p' && win[i + 1] == 0) {
-          \t\t\t\t\t\tif (!memcmp(&win[i], n_profile, 14)) {
-          \t\t\t\t\t\t\t/* Ensure "profile" is standalone: not preceded by letters (e.g. crossprofileapps) and null-terminated */
-          \t\t\t\t\t\t\tbool prev_ok = (i < 2) || !(win[i - 1] == 0 && win[i - 2] >= 'a' && win[i - 2] <= 'z');
-          \t\t\t\t\t\t\tbool next_ok = (i + 15 < chunk_len) && (win[i + 14] == 0 && win[i + 15] == 0);
+          \t\t\t\tif (copy_len >= 68) {
+          \t\t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, req_buf, t->buffer, 0, copy_len);
+          \t\t\t\t\tu8 *kdata = (u8 *)req_buf;
+          \t\t\t\t\tsize_t offset = 0;
+          \t\t\t\t\tint32_t token_len = *(int32_t *)(kdata + offset + 4);
 
-          \t\t\t\t\t\t\tif (prev_ok && next_ok) {
-          \t\t\t\t\t\t\t\tmemcpy(&win[i], repl_dummy, 14);
-          \t\t\t\t\t\t\t\tmodified = true;
-          \t\t\t\t\t\t\t\ti += 13;
+          \t\t\t\t\tif (token_len == 26) {
+          \t\t\t\t\t\toffset += 8; /* Skip 4-byte StrictMode header + 4-byte length */
+          \t\t\t\t\t} else if (*(int32_t *)(kdata + offset) == 26) {
+          \t\t\t\t\t\toffset += 4; /* Skip 4-byte length */
+          \t\t\t\t\t} else {
+          \t\t\t\t\t\tgoto skip_req_parse; /* Not an IServiceManager txn */
+          \t\t\t\t\t}
+
+          \t\t\t\t\t/* Skip "android.os.IServiceManager" (26 chars * 2 bytes + 2 null + 2 pad = 56 bytes total from length prefix) */
+          \t\t\t\t\toffset += 56;
+
+          \t\t\t\t\tif (offset + 4 <= copy_len) {
+          \t\t\t\t\t\tint32_t name_len = *(int32_t *)(kdata + offset);
+          \t\t\t\t\t\tif (name_len >= 7 && name_len <= 128 && offset + 4 + (name_len * 2) <= copy_len) {
+          \t\t\t\t\t\t\tu16 *name_chars = (u16 *)(kdata + offset + 4);
+          \t\t\t\t\t\t\tu16 first_char = name_chars[0];
+
+          \t\t\t\t\t\t\t/* FAST-PATH REJECT: 99% of services don't start with p, l, or v */
+          \t\t\t\t\t\t\tif (first_char == 'p' || first_char == 'l' || first_char == 'v') {
+          \t\t\t\t\t\t\t\tbool match = false;
+          \t\t\t\t\t\t\t\t/* Compiler optimizes these memcmp calls into highly efficient ARM64 load/compare instructions */
+          \t\t\t\t\t\t\t\tif (name_len == 7 && !memcmp(name_chars, s_profile, 14)) match = true;
+          \t\t\t\t\t\t\t\telse if (name_len >= 7 && !memcmp(name_chars, s_lineage, 14)) match = true;
+          \t\t\t\t\t\t\t\telse if (name_len >= 14 && !memcmp(name_chars, s_vendor_lineage, 28)) match = true;
+
+          \t\t\t\t\t\t\t\tif (match) {
+          \t\t\t\t\t\t\t\t\t/* Overwrite exactly name_len characters to preserve Parcel length prefix and alignment */
+          \t\t\t\t\t\t\t\t\tfor (int32_t i = 0; i < name_len; i++) {
+          \t\t\t\t\t\t\t\t\t\tname_chars[i] = (i < 7) ? s_dummy[i] : '0';
+          \t\t\t\t\t\t\t\t\t}
+          \t\t\t\t\t\t\t\t\t/* 4.14 SAFE: Write ONLY the modified string back to target process */
+          \t\t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, name_chars, name_len * 2);
+          \t\t\t\t\t\t\t\t}
           \t\t\t\t\t\t\t}
           \t\t\t\t\t\t}
           \t\t\t\t\t}
           \t\t\t\t}
-          \t\t\t\tif (modified)
-          \t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, off, win, chunk_len);
+          \t\t\tskip_req_parse: ;
+          \t\t\t} else {
+          \t\t\t\t/* Full-scan reply: listServices without truncation */
+          \t\t\t\tif (tr->data_size >= 8) {
+          \t\t\t\t\tint32_t header[2]; /* [0] = exc, [1] = count */
+          \t\t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, header, t->buffer, 0, sizeof(header));
+          \t\t\t\t\tint32_t exc = header[0];
+          \t\t\t\t\tint32_t count = header[1];
 
-          \t\t\t\tif (chunk_len <= 14)
-          \t\t\t\t\tbreak;
-          \t\t\t\toff += (chunk_len - 14);
+          \t\t\t\t\t/* Validate standard AIDL reply format */
+          \t\t\t\t\tif (exc == 0 && count > 0 && count <= 2000) {
+          \t\t\t\t\t\tsize_t offset = 8;
+          \t\t\t\t\t\tfor (int32_t c = 0; c < count && offset + 4 <= tr->data_size; c++) {
+          \t\t\t\t\t\t\tint32_t len = 0;
+          \t\t\t\t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, &len, t->buffer, offset, sizeof(len));
+
+          \t\t\t\t\t\t\tif (len < 0) {
+          \t\t\t\t\t\t\t\toffset += 4; /* Binder represents null strings as -1 */
+          \t\t\t\t\t\t\t\tcontinue;
+          \t\t\t\t\t\t\t}
+
+          \t\t\t\t\t\t\t/* Calculate exact string block size including null terminator and 4-byte alignment padding */
+          \t\t\t\t\t\t\tsize_t str_bytes = ((len + 1) * 2 + 3) & ~3;
+          \t\t\t\t\t\t\tif (offset + 4 + str_bytes > tr->data_size) break;
+
+          \t\t\t\t\t\t\tif (len >= 7 && len <= 128) {
+          \t\t\t\t\t\t\t\tu16 chars[128];
+          \t\t\t\t\t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, chars, t->buffer, offset + 4, len * 2);
+          \t\t\t\t\t\t\t\tu16 first_char = chars[0];
+
+          \t\t\t\t\t\t\t\t/* FAST-PATH REJECT */
+          \t\t\t\t\t\t\t\tif (first_char == 'p' || first_char == 'l' || first_char == 'v') {
+          \t\t\t\t\t\t\t\t\tbool match = false;
+          \t\t\t\t\t\t\t\t\tif (len == 7 && !memcmp(chars, s_profile, 14)) match = true;
+          \t\t\t\t\t\t\t\t\telse if (len >= 7 && !memcmp(chars, s_lineage, 14)) match = true;
+          \t\t\t\t\t\t\t\t\telse if (len >= 14 && !memcmp(chars, s_vendor_lineage, 28)) match = true;
+
+          \t\t\t\t\t\t\t\tif (match) {
+          \t\t\t\t\t\t\t\t\tfor (int32_t i = 0; i < len; i++) {
+          \t\t\t\t\t\t\t\t\t\tchars[i] = (i < 7) ? s_dummy[i] : '0';
+          \t\t\t\t\t\t\t\t\t}
+          \t\t\t\t\t\t\t\t\t/* 4.14 SAFE: Write ONLY the modified string back */
+          \t\t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, chars, len * 2);
+          \t\t\t\t\t\t\t\t}
+          \t\t\t\t\t\t\t}
+          \t\t\t\t\t\t}
+
+          \t\t\t\t\t\toffset += 4 + str_bytes;
+          \t\t\t\t\t}
+          \t\t\t\t}
           \t\t\t}
           \t\t}
           \t}"""
@@ -390,7 +460,7 @@ jobs:
           with open("drivers/android/binder.c", "w") as f:
               f.write(content)
 
-          print("✅ Successfully patched drivers/android/binder.c with hardened filter")
+          print("✅ Successfully patched drivers/android/binder.c with hardened structured parser")
           PY_EOF
           git diff drivers/android/binder.c
 
@@ -437,8 +507,8 @@ jobs:
           # 3. IPA v3 driver missing parent include directory
           sed -i "1i ccflags-y += -I\$(srctree)/drivers/platform/msm/ipa/ipa_v3" drivers/platform/msm/ipa/ipa_v3/Makefile
 
-          # 4. Fix relative angled includes (<../...>) across all drivers
-          grep -rlE '#include <\.\./' drivers/ | xargs sed -i -E 's|#include <(\.\./[^>]+)>|#include "\1"|g'
+          # 4. Fix relative angled includes (<../...>) across all drivers safely
+          grep -rlE '#include <\.\./' drivers/ | xargs -r sed -i -E 's|#include <(\.\./[^>]+)>|#include "\1"|g'
 
       - name: Configure ReSukiSU + SuSFS Kernel
         run: |
