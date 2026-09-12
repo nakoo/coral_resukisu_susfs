@@ -349,31 +349,37 @@ jobs:
           \t\t\tstatic const u16 s_vendor_lineage[] = { 'v', 'e', 'n', 'd', 'o', 'r', '.', 'l', 'i', 'n', 'e', 'a', 'g', 'e' };
           \t\t\tstatic const u16 s_dummy[] = { 'd', 'u', 'm', 'm', 'y', '_', '0' };
 
-          \t\t\tif (!reply) {
+          \t\tif (!reply) {
           \t\t\t\t/* Fast-path request: checkService / getService */
           \t\t\t\tu32 req_buf[64]; /* 256 bytes, guaranteed 4-byte aligned on kernel stack */
           \t\t\t\tsize_t copy_len = min_t(size_t, tr->data_size, sizeof(req_buf));
 
           \t\t\t\tif (copy_len >= 68) {
+          \t\t\t\t\tstatic const u16 s_sm_token[26] = {
+          \t\t\t\t\t\t'a', 'n', 'd', 'r', 'o', 'i', 'd', '.', 'o', 's', '.',
+          \t\t\t\t\t\t'I', 'S', 'e', 'r', 'v', 'i', 'c', 'e', 'M', 'a', 'n', 'a', 'g', 'e', 'r'
+          \t\t\t\t\t};
           \t\t\t\t\tu8 *kdata;
           \t\t\t\t\tsize_t offset;
-          \t\t\t\t\tint32_t token_len;
+          \t\t\t\t\tbool token_found = false;
 
           \t\t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, req_buf, t->buffer, 0, copy_len);
           \t\t\t\t\tkdata = (u8 *)req_buf;
-          \t\t\t\t\toffset = 0;
-          \t\t\t\t\ttoken_len = *(int32_t *)(kdata + offset + 4);
 
-          \t\t\t\t\tif (token_len == 26) {
-          \t\t\t\t\t\toffset += 8; /* Skip 4-byte StrictMode header + 4-byte length */
-          \t\t\t\t\t} else if (*(int32_t *)(kdata + offset) == 26) {
-          \t\t\t\t\t\toffset += 4; /* Skip 4-byte length */
-          \t\t\t\t\t} else {
-          \t\t\t\t\t\tgoto skip_req_parse; /* Not an IServiceManager txn */
+          \t\t\t\t\t/* Scan for IServiceManager token across Android 9-16 Parcel header variants */
+          \t\t\t\t\tfor (offset = 0; offset <= 24 && offset + 60 <= copy_len; offset += 4) {
+          \t\t\t\t\t\tif (*(int32_t *)(kdata + offset) == 26 &&
+          \t\t\t\t\t\t    !memcmp(kdata + offset + 4, s_sm_token, 52)) {
+          \t\t\t\t\t\t\ttoken_found = true;
+          \t\t\t\t\t\t\tbreak;
+          \t\t\t\t\t\t}
           \t\t\t\t\t}
 
-          \t\t\t\t\t/* Skip "android.os.IServiceManager" (26 chars * 2 bytes + 2 null + 2 pad = 56 bytes total from length prefix) */
-          \t\t\t\t\toffset += 56;
+          \t\t\t\t\tif (!token_found)
+          \t\t\t\t\t\tgoto skip_req_parse;
+
+          \t\t\t\t\t/* Skip token length (4) + 52 bytes string + 4 bytes null/pad = 60 bytes total */
+          \t\t\t\t\toffset += 60;
 
           \t\t\t\t\tif (offset + 4 <= copy_len) {
           \t\t\t\t\t\tint32_t name_len = *(int32_t *)(kdata + offset);
