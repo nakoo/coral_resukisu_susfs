@@ -68,12 +68,15 @@ jobs:
             "${{ inputs.base_img_url }}"
           ls -la base.img
 
-      - name: Extract KERNELRELEASE from Base boot.img
+      - name: Extract KERNELRELEASE and mkbootimg args from Base boot.img
         run: |
           echo "=== Extracting stock vermagic directly from base.img ==="
-          mkdir -p base_unpacked
-          python3 mkbootimg_tools/unpack_bootimg.py --boot_img base.img --out base_unpacked
-          lz4 -dc base_unpacked/kernel > /tmp/base_Image
+          mkdir -p unpacked out_artifacts
+          python3 mkbootimg_tools/unpack_bootimg.py \
+            --boot_img base.img \
+            --out unpacked \
+            --format mkbootimg > mkbootimg_args
+          lz4 -dc unpacked/kernel > /tmp/base_Image
           STOCK_RELEASE=$(strings /tmp/base_Image | grep -E "Linux version [0-9]" | head -n 1 | awk '{print $3}')
           echo "Extracted Stock KERNELRELEASE: $STOCK_RELEASE"
           test -n "$STOCK_RELEASE" || { echo "::error::Failed to extract vermagic from base.img"; exit 1; }
@@ -448,34 +451,34 @@ jobs:
           cd kernel_src
           echo "=== Generating base .config from floral_defconfig ==="
           make -j"$(nproc)" ARCH=arm64 \
-            CC=clang HOSTCC=clang HOSTCXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
             floral_defconfig
 
           echo "=== Setting ReSukiSU + SuSFS kernel options via scripts/config ==="
-          ./scripts/config --file .config -e KSU
-          ./scripts/config --file .config -d KSU_WITH_KPROBES
-          ./scripts/config --file .config -d KSU_MANUAL_HOOK
-
           # SuSFS configuration
-          ./scripts/config --file .config -e KSU_SUSFS
-          ./scripts/config --file .config -e KSU_SUSFS_SUS_PATH
-          ./scripts/config --file .config -e KSU_SUSFS_SUS_MOUNT
-          ./scripts/config --file .config -e KSU_SUSFS_SUS_KSTAT
-          ./scripts/config --file .config -e KSU_SUSFS_SPOOF_UNAME
-          ./scripts/config --file .config -e KSU_SUSFS_ENABLE_LOG
-          ./scripts/config --file .config -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-          ./scripts/config --file .config -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          ./scripts/config --file .config -e KSU_SUSFS_OPEN_REDIRECT
-          ./scripts/config --file .config -e KSU_SUSFS_SUS_MAP
-
-          ./scripts/config --file .config -d CC_WERROR
-          ./scripts/config --file .config -e OVERLAY_FS
-          ./scripts/config --file .config -e TMPFS_XATTR
-          ./scripts/config --file .config -e KALLSYMS
-          ./scripts/config --file .config -e KALLSYMS_ALL
+          ./scripts/config --file .config \
+            -e KSU \
+            -d KSU_WITH_KPROBES \
+            -d KSU_MANUAL_HOOK \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -d CC_WERROR \
+            -e OVERLAY_FS \
+            -e TMPFS_XATTR \
+            -e KALLSYMS \
+            -e KALLSYMS_ALL \
+            -d BUILD_ARM64_APPENDED_DTB_IMAGE \
+            -d BUILD_ARM64_DT_OVERLAY
 
           # Enforce exact stock vermagic
           echo "${{ env.STOCK_RELEASE }}" > .scmversion
@@ -484,7 +487,6 @@ jobs:
 
           echo "=== Updating and verifying .config with olddefconfig ==="
           make -j"$(nproc)" ARCH=arm64 \
-            CC=clang HOSTCC=clang HOSTCXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -498,7 +500,6 @@ jobs:
           cd kernel_src
           echo "=== Compiling ReSukiSU + SuSFS Image.lz4 with pure LLVM ==="
           make -j"$(nproc)" ARCH=arm64 \
-            CC=clang HOSTCC=clang HOSTCXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -523,19 +524,13 @@ jobs:
       - name: Repack ReSukiSU + SuSFS boot.img
         run: |
           set -e
-          mkdir -p out_artifacts unpacked
           
           IMAGE_LZ4=$(find kernel_src/arch/arm64/boot -name "Image.lz4" | head -n 1)
           test -f "$IMAGE_LZ4" || { echo "::error::Image.lz4 not found!"; exit 1; }
           cp "$IMAGE_LZ4" out_artifacts/Image.lz4
 
-          echo "=== Unpacking original boot.img ==="
-          ARGS=$(python3 mkbootimg_tools/unpack_bootimg.py \
-            --boot_img base.img \
-            --out unpacked \
-            --format mkbootimg)
-
           echo "=== Substituting newly compiled kernel ==="
+          ARGS=$(cat mkbootimg_args)
           NEW_ARGS=$(echo "$ARGS" | sed -E "s#--kernel [^ ]+#--kernel out_artifacts/Image.lz4#")
 
           echo "=== Repacking boot.img ==="
