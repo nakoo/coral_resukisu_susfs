@@ -244,8 +244,9 @@ jobs:
           \t\t\tstatic const u16 s_dummy16[] = { 'd', 'u', 'm', 'm', 'y', '_', '0' };
 
           \t\t\tif (!reply) {
-          \t\t\t\t/* Sanitize "profile" getService requests (supports UTF-8 and UTF-16) */
-          \t\t\t\tu8 req_buf[256];
+          \t\t\t\t/* Sanitize getService/checkService requests (supports UTF-8 and UTF-16) */
+          \t\t\t\tu32 req_buf[64]; /* 256 bytes, guaranteed 4-byte aligned on stack */
+          \t\t\t\tu8 *kdata = (u8 *)req_buf;
           \t\t\t\tsize_t copy_len = min_t(size_t, tr->data_size, sizeof(req_buf));
 
           \t\t\t\tif (copy_len >= 40) {
@@ -253,19 +254,35 @@ jobs:
           \t\t\t\t\tbinder_alloc_copy_from_buffer(&target_proc->alloc, req_buf, t->buffer, 0, copy_len);
 
           \t\t\t\t\tfor (offset = 0; offset + 12 <= copy_len; offset += 4) {
-          \t\t\t\t\t\tint32_t len = *(int32_t *)(req_buf + offset);
-          \t\t\t\t\t\tif (len == 7) {
-          \t\t\t\t\t\t\t/* Check UTF-8 "profile" */
-          \t\t\t\t\t\t\tif (offset + 4 + 7 <= copy_len &&
-          \t\t\t\t\t\t\t    !memcmp(req_buf + offset + 4, "profile", 7)) {
-          \t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, "dummy_0", 7);
-          \t\t\t\t\t\t\t\tbreak;
+          \t\t\t\t\t\tint32_t len = *(int32_t *)(kdata + offset);
+          \t\t\t\t\t\tif (len >= 7 && len <= 128) {
+          \t\t\t\t\t\t\t/* Check UTF-8 (profile, lineage*, vendor.lineage*) */
+          \t\t\t\t\t\t\tif (offset + 4 + len <= copy_len) {
+          \t\t\t\t\t\t\t\tchar *chars = (char *)(kdata + offset + 4);
+          \t\t\t\t\t\t\t\tif ((len == 7 && !memcmp(chars, "profile", 7)) ||
+          \t\t\t\t\t\t\t\t    (len >= 7 && !memcmp(chars, "lineage", 7)) ||
+          \t\t\t\t\t\t\t\t    (len >= 14 && !memcmp(chars, "vendor.lineage", 14))) {
+          \t\t\t\t\t\t\t\t\tchar dummy[128];
+          \t\t\t\t\t\t\t\t\tint32_t i;
+          \t\t\t\t\t\t\t\t\tfor (i = 0; i < len; i++)
+          \t\t\t\t\t\t\t\t\t\tdummy[i] = (i < 7) ? "dummy_0"[i] : '0';
+          \t\t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, dummy, len);
+          \t\t\t\t\t\t\t\t\tbreak;
+          \t\t\t\t\t\t\t\t}
           \t\t\t\t\t\t\t}
-          \t\t\t\t\t\t\t/* Check UTF-16 "profile" */
-          \t\t\t\t\t\t\tif (offset + 4 + 14 <= copy_len &&
-          \t\t\t\t\t\t\t    !memcmp(req_buf + offset + 4, s_profile16, 14)) {
-          \t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, s_dummy16, 14);
-          \t\t\t\t\t\t\t\tbreak;
+          \t\t\t\t\t\t\t/* Check UTF-16 (profile, lineage*, vendor.lineage*) */
+          \t\t\t\t\t\t\tif (offset + 4 + len * 2 <= copy_len) {
+          \t\t\t\t\t\t\t\tu16 *chars = (u16 *)(kdata + offset + 4);
+          \t\t\t\t\t\t\t\tif ((len == 7 && !memcmp(chars, s_profile16, 14)) ||
+          \t\t\t\t\t\t\t\t    (len >= 7 && !memcmp(chars, s_lineage16, 14)) ||
+          \t\t\t\t\t\t\t\t    (len >= 14 && !memcmp(chars, s_vendor_lineage16, 28))) {
+          \t\t\t\t\t\t\t\t\tu16 dummy[128];
+          \t\t\t\t\t\t\t\t\tint32_t i;
+          \t\t\t\t\t\t\t\t\tfor (i = 0; i < len; i++)
+          \t\t\t\t\t\t\t\t\t\tdummy[i] = (i < 7) ? s_dummy16[i] : '0';
+          \t\t\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, offset + 4, dummy, len * 2);
+          \t\t\t\t\t\t\t\t\tbreak;
+          \t\t\t\t\t\t\t\t}
           \t\t\t\t\t\t\t}
           \t\t\t\t\t\t}
           \t\t\t\t\t}
