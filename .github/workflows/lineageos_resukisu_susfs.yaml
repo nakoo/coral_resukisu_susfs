@@ -136,7 +136,7 @@ jobs:
       - name: Patch show_smap to Sanitize Executable File Mappings
         run: |
           cd kernel_src
-          echo "=== Patching show_smap with optimized branch prediction ==="
+          echo "=== Patching show_smap with synchronized smaps and smaps_rollup accounting ==="
           python3 - << 'PY_EOF'
           with open("fs/proc/task_mmu.c", "r") as f:
               content = f.read()
@@ -145,89 +145,37 @@ jobs:
           if "#include <linux/cred.h>" not in content:
               content = content.replace("#include <linux/ctype.h>", "#include <linux/ctype.h>\n#include <linux/cred.h>", 1)
 
-          target = """\tif (!rollup_mode || last_vma)
-          \t\tseq_printf(m,
-          \t\t\t   "Rss:            %8lu kB\\n"
-          \t\t\t   "Pss:            %8lu kB\\n"
-          \t\t\t   "Shared_Clean:   %8lu kB\\n"
-          \t\t\t   "Shared_Dirty:   %8lu kB\\n"
-          \t\t\t   "Private_Clean:  %8lu kB\\n"
-          \t\t\t   "Private_Dirty:  %8lu kB\\n"
-          \t\t\t   "Referenced:     %8lu kB\\n"
-          \t\t\t   "Anonymous:      %8lu kB\\n"
-          \t\t\t   "LazyFree:       %8lu kB\\n"
-          \t\t\t   "AnonHugePages:  %8lu kB\\n"
-          \t\t\t   "ShmemPmdMapped: %8lu kB\\n"
-          \t\t\t   "Shared_Hugetlb: %8lu kB\\n"
-          \t\t\t   "Private_Hugetlb: %7lu kB\\n"
-          \t\t\t   "Swap:           %8lu kB\\n"
-          \t\t\t   "SwapPss:        %8lu kB\\n"
-          \t\t\t   "Locked:         %8lu kB\\n",
-          \t\t\t   mss->resident >> 10,
-          \t\t\t   (unsigned long)(mss->pss >> (10 + PSS_SHIFT)),
-          \t\t\t   mss->shared_clean  >> 10,
-          \t\t\t   mss->shared_dirty  >> 10,
-          \t\t\t   mss->private_clean >> 10,
-          \t\t\t   mss->private_dirty >> 10,
-          \t\t\t   mss->referenced >> 10,
-          \t\t\t   mss->anonymous >> 10,"""
+          target = "\twalk_page_vma(vma, &smaps_walk);"
 
-          replacement = """\tif (!rollup_mode || last_vma) {
-          \t\tunsigned long smap_priv_clean = mss->private_clean;
-          \t\tunsigned long smap_priv_dirty = mss->private_dirty;
-          \t\tunsigned long smap_anon = mss->anonymous;
+          replacement = """\t{
+          \t\tunsigned long vma_before_dirty = mss->private_dirty;
+          \t\tunsigned long vma_before_anon = mss->anonymous;
+          \t\tunsigned long vma_before_swap = mss->swap;
+
+          \t\t/* mmap_sem is held in m_start */
+          \t\twalk_page_vma(vma, &smaps_walk);
 
           \t\t/* Only sanitize for untrusted non-system target processes inspecting executable VMAs without swapped pages */
-          \t\tif (unlikely(!rollup_mode && vma->vm_file && (vma->vm_flags & VM_EXEC) &&
+          \t\t/* Both /proc/PID/smaps and /proc/PID/smaps_rollup are kept mathematically identical */
+          \t\tif (unlikely(vma->vm_file && (vma->vm_flags & VM_EXEC) &&
           \t\t             priv->task && from_kuid(&init_user_ns, task_uid(priv->task)) >= 10000 &&
-          \t\t             mss->swap == 0)) {
-          \t\t\tif (smap_anon || smap_priv_dirty) {
-          \t\t\t\tsmap_priv_clean += smap_priv_dirty;
-          \t\t\t\tsmap_priv_dirty = 0;
-          \t\t\t\tsmap_anon = 0;
+          \t\t             (mss->swap == vma_before_swap))) {
+          \t\t\tunsigned long vma_dirty = mss->private_dirty - vma_before_dirty;
+          \t\t\tunsigned long vma_anon = mss->anonymous - vma_before_anon;
+
+          \t\t\tif (vma_dirty || vma_anon) {
+          \t\t\t\tmss->private_clean += vma_dirty;
+          \t\t\t\tmss->private_dirty -= vma_dirty;
+          \t\t\t\tmss->anonymous -= vma_anon;
           \t\t\t}
           \t\t}
-
-          \t\tseq_printf(m,
-          \t\t\t   "Rss:            %8lu kB\\n"
-          \t\t\t   "Pss:            %8lu kB\\n"
-          \t\t\t   "Shared_Clean:   %8lu kB\\n"
-          \t\t\t   "Shared_Dirty:   %8lu kB\\n"
-          \t\t\t   "Private_Clean:  %8lu kB\\n"
-          \t\t\t   "Private_Dirty:  %8lu kB\\n"
-          \t\t\t   "Referenced:     %8lu kB\\n"
-          \t\t\t   "Anonymous:      %8lu kB\\n"
-          \t\t\t   "LazyFree:       %8lu kB\\n"
-          \t\t\t   "AnonHugePages:  %8lu kB\\n"
-          \t\t\t   "ShmemPmdMapped: %8lu kB\\n"
-          \t\t\t   "Shared_Hugetlb: %8lu kB\\n"
-          \t\t\t   "Private_Hugetlb: %7lu kB\\n"
-          \t\t\t   "Swap:           %8lu kB\\n"
-          \t\t\t   "SwapPss:        %8lu kB\\n"
-          \t\t\t   "Locked:         %8lu kB\\n",
-          \t\t\t   mss->resident >> 10,
-          \t\t\t   (unsigned long)(mss->pss >> (10 + PSS_SHIFT)),
-          \t\t\t   mss->shared_clean  >> 10,
-          \t\t\t   mss->shared_dirty  >> 10,
-          \t\t\t   smap_priv_clean >> 10,
-          \t\t\t   smap_priv_dirty >> 10,
-          \t\t\t   mss->referenced >> 10,
-          \t\t\t   smap_anon >> 10,"""
+          \t}"""
 
           if target not in content:
-              print("❌ Error: Target seq_printf block not found in fs/proc/task_mmu.c")
+              print("❌ Error: Target walk_page_vma line not found in fs/proc/task_mmu.c")
               exit(1)
 
           content = content.replace(target, replacement, 1)
-
-          close_target = "(unsigned long)(mss->pss_locked >> (10 + PSS_SHIFT)));"
-          close_replacement = "(unsigned long)(mss->pss_locked >> (10 + PSS_SHIFT)));\n\t}"
-
-          if close_target not in content:
-              print("❌ Error: Close target not found in fs/proc/task_mmu.c")
-              exit(1)
-
-          content = content.replace(close_target, close_replacement, 1)
 
           with open("fs/proc/task_mmu.c", "w") as f:
               f.write(content)
@@ -259,8 +207,9 @@ jobs:
           \t\tbool is_target_txn = false;
 
           \t\tif (reply) {
-          \t\t\t/* Inspect replies originating FROM servicemanager to untrusted apps */
-          \t\t\tif (proc == context->binder_context_mgr_node->proc && target_proc && target_proc->tsk) {
+          \t\t\t/* Inspect replies originating FROM servicemanager to untrusted apps strictly for listServices (code 4) */
+          \t\t\tif (proc == context->binder_context_mgr_node->proc && target_proc && target_proc->tsk &&
+          \t\t\t    in_reply_to && in_reply_to->code == 4 /* LIST_SERVICES_TRANSACTION */) {
           \t\t\t\trcu_read_lock();
           \t\t\t\tif (from_kuid(&init_user_ns, task_uid(target_proc->tsk)) >= 10000) {
           \t\t\t\t\tchar c[TASK_COMM_LEN];
