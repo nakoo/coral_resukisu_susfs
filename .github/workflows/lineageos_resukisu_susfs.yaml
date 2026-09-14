@@ -1,13 +1,18 @@
 name: coral lineageos with resukisu susfs
 
 on:
+  schedule:
+    # Runs at 00:00 UTC every day
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       base_img_url:
-        description: "Direct download URL for LineageOS 23.2 base boot.img"
-        required: true
+        description: "Custom boot.img URL (leave empty to use default)"
+        required: false
         type: string
-        default: "https://mirrorbits.lineageos.org/full/coral/20260911/boot.img"
+
+env:
+  DEFAULT_BASE_IMG_URL: "https://mirrorbits.lineageos.org/full/coral/20260911/boot.img"
 
 jobs:
   build-resukisu-coral-4-14:
@@ -57,7 +62,8 @@ jobs:
 
       - name: Download Base boot.img
         run: |
-          echo "=== Downloading base boot.img ==="
+          TARGET_URL="${{ inputs.base_img_url || env.DEFAULT_BASE_IMG_URL }}"
+          echo "=== Downloading base boot.img from: $TARGET_URL ==="
           curl -fSL \
             --retry 5 \
             --retry-delay 5 \
@@ -65,7 +71,7 @@ jobs:
             --connect-timeout 30 \
             --max-time 600 \
             -o base.img \
-            "${{ inputs.base_img_url }}"
+            "$TARGET_URL"
           ls -la base.img
 
       - name: Extract KERNELRELEASE and mkbootimg args from Base boot.img
