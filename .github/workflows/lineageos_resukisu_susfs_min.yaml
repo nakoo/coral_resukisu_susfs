@@ -117,7 +117,6 @@ jobs:
           git checkout FETCH_HEAD
           cd ..
           
-
       - name: Apply SuSFS Kernel Patches
         run: |
           cd kernel_src
@@ -125,13 +124,10 @@ jobs:
           # 1. Adapt vfs_open signature in patch from 3 params to 2 params for 4.14 kernel
           sed 's/error = vfs_open(&path, file, current_cred());/error = vfs_open(\&path, file);/g' \
             ../nongki_build/Patches/Patch/susfs_patch_to_4.14.patch > /tmp/susfs_4.14_coral.patch
-
           # 2. Add missing context include in fs/proc/task_mmu.c
           sed -i '/#include <linux\/mm_inline.h>/a#include <linux\/ctype.h>' fs/proc/task_mmu.c
-
           # 3. Apply kernel patch
           patch -p1 < /tmp/susfs_4.14_coral.patch
-
           # 4. Verify no rejected hunks exist
           REJ_COUNT=$(find . -name "*.rej" | wc -l)
           if [ "$REJ_COUNT" -ne 0 ]; then
@@ -139,7 +135,13 @@ jobs:
             find . -name "*.rej" -exec cat {} +
             exit 1
           fi
-          echo "✅ SuSFS kernel patch applied cleanly with 0 rejects."
+
+          # 5. Fix the 4.14 NULL pointer dereference bug in fs/namei.c
+          echo "=== Fixing SuSFS 4.14 NULL pointer dereference in fs/namei.c ==="
+          sed -i '/bool is_fuse = dentry->d_inode->i_sb->s_magic == FUSE_SUPER_MAGIC;/d' fs/namei.c
+          sed -i '/susfs_is_inode_sus_path(dentry->d_inode)) {/a \\t\tbool is_fuse = dentry->d_inode->i_sb->s_magic == FUSE_SUPER_MAGIC;' fs/namei.c
+
+          echo "✅ SuSFS kernel patch applied and bug fixed."
 
       - name: Setup ReSukiSU Driver
         run: |
