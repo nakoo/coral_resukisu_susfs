@@ -108,14 +108,14 @@ jobs:
 
       - name: Clone NonGKI SuSFS Patches
         run: |
-          #git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git nongki_build
+          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git nongki_build
 
-          mkdir -p nongki_build && cd nongki_build
-          git init
-          git remote add origin https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
-          git fetch --depth 1 origin 426ff0044954f125362b432899a17b0727ef93a9
-          git checkout FETCH_HEAD
-          cd ..
+          #mkdir -p nongki_build && cd nongki_build
+          #git init
+          #git remote add origin https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
+          #git fetch --depth 1 origin 426ff0044954f125362b432899a17b0727ef93a9
+          #git checkout FETCH_HEAD
+          #cd ..
           
       - name: Apply SuSFS Kernel Patches
         run: |
