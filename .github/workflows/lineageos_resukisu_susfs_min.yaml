@@ -108,7 +108,15 @@ jobs:
 
       - name: Clone NonGKI SuSFS Patches
         run: |
-          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git nongki_build
+          #git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git nongki_build
+
+          mkdir -p nongki_build && cd nongki_build
+          git init
+          git remote add origin https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
+          git fetch --depth 1 origin 426ff0044954f125362b432899a17b0727ef93a9
+          git checkout FETCH_HEAD
+          cd ..
+          
 
       - name: Apply SuSFS Kernel Patches
         run: |
@@ -137,16 +145,8 @@ jobs:
         run: |
           cd kernel_src
           echo "=== Adding ReSukiSU (Main Branch for v4.2.0-rc1) ==="
+          git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git
 
-          # git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git
-
-          mkdir -p ReSukiSU && cd ReSukiSU
-          git init
-          git remote add origin https://github.com/ReSukiSU/ReSukiSU.git
-          git fetch --depth 1 origin 6d674e50a022a85076dcfe4498af9a8bfead2cf9
-          git checkout FETCH_HEAD
-          cd ..
-          
           # Symlink the kernel driver
           cd drivers
           ln -sf ../ReSukiSU/kernel kernelsu
