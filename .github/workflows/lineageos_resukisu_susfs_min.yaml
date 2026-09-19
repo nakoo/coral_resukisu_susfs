@@ -179,7 +179,7 @@ jobs:
             --retry-all-errors \
             --connect-timeout 30 \
             --max-time 600 \
-            https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
+            https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh | bash -s dev
           echo "✅ NoMount setup completed."
 
       - name: Bypass Vendor Module CRC Check (Fix Vendor Module Loading)
