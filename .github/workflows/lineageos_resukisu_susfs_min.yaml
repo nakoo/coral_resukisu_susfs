@@ -110,13 +110,6 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git nongki_build
 
-          #mkdir -p nongki_build && cd nongki_build
-          #git init
-          #git remote add origin https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
-          #git fetch --depth 1 origin 426ff0044954f125362b432899a17b0727ef93a9
-          #git checkout FETCH_HEAD
-          #cd ..
-          
       - name: Apply SuSFS Kernel Patches
         run: |
           cd kernel_src
@@ -135,13 +128,7 @@ jobs:
             find . -name "*.rej" -exec cat {} +
             exit 1
           fi
-
-          # 5. Fix the 4.14 NULL pointer dereference bug in fs/namei.c
-          echo "=== Fixing SuSFS 4.14 NULL pointer dereference in fs/namei.c ==="
-          sed -i '/bool is_fuse = dentry->d_inode->i_sb->s_magic == FUSE_SUPER_MAGIC;/d' fs/namei.c
-          sed -i '/susfs_is_inode_sus_path(dentry->d_inode)) {/a \\t\tbool is_fuse = dentry->d_inode->i_sb->s_magic == FUSE_SUPER_MAGIC;' fs/namei.c
-
-          echo "✅ SuSFS kernel patch applied and bug fixed."
+          echo "✅ SuSFS kernel patch applied."
 
       - name: Setup ReSukiSU Driver
         run: |
